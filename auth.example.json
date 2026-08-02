@@ -1,0 +1,14 @@
+{
+  "auth": {
+    "accessToken": "your-access-token-here",
+    "refreshToken": "your-refresh-token-here",
+    "expiresAt": 0,
+    "domain": "codebuddy.cn"
+  },
+  "account": {
+    "uid": "your-uid",
+    "enterpriseId": "",
+    "nickname": "your-nickname"
+  },
+  "disabled": false
+}

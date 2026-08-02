@@ -1,0 +1,9 @@
+auths/
+*.json
+!config.example.json
+!*.example.json
+*.tmp
+__pycache__/
+*.pyc
+.env
+*.log

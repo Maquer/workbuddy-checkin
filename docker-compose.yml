@@ -1,0 +1,9 @@
+services:
+  workbuddy:
+    build: .
+    container_name: workbuddy-checkin
+    restart: unless-stopped
+    volumes:
+      - ./auths:/app/auths
+    environment:
+      - TZ=Asia/Shanghai
