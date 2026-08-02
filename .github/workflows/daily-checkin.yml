@@ -1,0 +1,42 @@
+name: WorkBuddy 每日签到
+
+on:
+  schedule:
+    # 每天北京时间 09:00 (UTC 01:00)
+    - cron: '0 1 * * *'
+  workflow_dispatch: # 支持手动触发
+
+jobs:
+  checkin:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 写入凭证
+        env:
+          WORKBUDDY_AUTH: ${{ secrets.WORKBUDDY_AUTH }}
+        run: |
+          mkdir -p auths
+          if [ -n "$WORKBUDDY_AUTH" ]; then
+            echo "$WORKBUDDY_AUTH" > auths/workbuddy-auth.json
+            echo "凭证已写入"
+          else
+            echo "未设置 WORKBUDDY_AUTH secret，跳过"
+            exit 1
+          fi
+
+      - name: 执行签到
+        run: python3 workbuddy_checkin.py signin
+
+      - name: 查询积分
+        run: python3 workbuddy_checkin.py credit
+
+      - name: 清理凭证
+        if: always()
+        run: rm -rf auths/
