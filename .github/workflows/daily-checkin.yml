@@ -31,7 +31,9 @@ jobs:
             exit 1
           fi
 
-      - name: 执行签到
+      - name: 执行签到 + Bark 通知
+        env:
+          BARK_URL: ${{ secrets.BARK_URL }}
         run: python3 workbuddy_checkin.py signin
 
       - name: 查询积分

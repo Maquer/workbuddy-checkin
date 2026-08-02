@@ -78,6 +78,9 @@ TOKEN_REFRESH_MARGIN = 24 * 3600  # 过期前 24h 刷新
 # HTTP 超时
 HTTP_TIMEOUT = 30
 
+# Bark 推送通知（通过环境变量 BARK_URL 配置）
+BARK_URL = os.environ.get("BARK_URL", "")
+
 
 # ─── 凭证文件读写 ────────────────────────────────────────────────────────────
 
@@ -765,6 +768,82 @@ def uid_from_filename(path):
     return m.group(1) if m else ""
 
 
+# ─── Bark 推送通知 ────────────────────────────────────────────────────────────
+
+def send_bark_notification(success_n, already_n, fail_n, global_n, skipped_n, results):
+    """通过 Bark 推送签到结果通知。"""
+    now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+    # 构造通知标题
+    total = success_n + already_n + fail_n + global_n + skipped_n
+    if fail_n > 0:
+        title = f"WorkBuddy签到 {success_n}成功/{fail_n}失败"
+        icon = "❌"
+    elif success_n > 0:
+        title = f"WorkBuddy签到 {success_n}成功"
+        icon = "✅"
+    elif already_n > 0:
+        title = f"WorkBuddy签到 今日已签"
+        icon = "✓"
+    else:
+        title = "WorkBuddy签到 完成"
+        icon = "📋"
+
+    # 构造通知正文
+    lines = []
+    for r in results:
+        nickname = r.get("nickname", "")
+        region = r.get("region", "?").upper()
+        if r.get("error"):
+            lines.append(f"[{region}] {nickname}: 失败 - {r['error'][:50]}")
+        elif r.get("skipped"):
+            reason = r.get("reason", "")
+            msg = r.get("message", "")
+            if reason == "already":
+                ci = r.get("checkin_status", {})
+                streak = ci.get("streak_days", 0)
+                credits = r.get("credits", "")
+                lines.append(f"[{region}] {nickname}: 已签(连{streak}天) {credits}")
+            else:
+                lines.append(f"[{region}] {nickname}: {msg}")
+        elif r.get("success"):
+            msg = r.get("message", "成功")
+            credits = r.get("credits", "")
+            ci = r.get("checkin_status", {})
+            streak = ci.get("streak_days", 0)
+            lines.append(f"[{region}] {nickname}: {msg} 连{streak}天 {credits}")
+
+    summary = f"成功{success_n} 已签{already_n} 失败{fail_n}"
+    body = "\n".join(lines) if lines else "无账号"
+    body += f"\n{summary}"
+
+    # 发送到 Bark
+    bark_base = BARK_URL.rstrip("/")
+    payload = {
+        "title": f"{icon} {title}",
+        "body": body,
+        "group": "WorkBuddy",
+        "icon": "https://www.codebuddy.cn/favicon.ico",
+    }
+
+    # 失败时设置铃声和级别
+    if fail_n > 0:
+        payload["sound"] = "alarm"
+        payload["level"] = "timeSensitive"
+
+    try:
+        data = json.dumps(payload).encode("utf-8")
+        req = urllib.request.Request(bark_base, data=data, method="POST")
+        req.add_header("Content-Type", "application/json")
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            if resp.status == 200:
+                print(f"  [通知] Bark 推送成功")
+            else:
+                print(f"  [通知] Bark 推送失败 (HTTP {resp.status})")
+    except Exception as e:
+        print(f"  [通知] Bark 推送异常: {e}")
+
+
 # ─── 主命令 ────────────────────────────────────────────────────────────────────
 
 def cmd_signin(args):
@@ -782,6 +861,7 @@ def cmd_signin(args):
     print(f"{'='*60}\n")
 
     success_n = fail_n = already_n = global_n = skipped_n = 0
+    results = []
 
     for path in files:
         try:
@@ -793,6 +873,7 @@ def cmd_signin(args):
 
         result = checkin_one_account(path, auth_data)
         print_signin_result(result, verbose=True)
+        results.append(result)
 
         if result.get("error"):
             fail_n += 1
@@ -813,6 +894,10 @@ def cmd_signin(args):
     print(f"  汇总: 成功 {success_n} | 已签 {already_n} | 失败 {fail_n} | "
           f"Global跳过 {global_n} | 其他跳过 {skipped_n}")
     print(f"{'='*60}\n")
+
+    # Bark 推送通知
+    if BARK_URL:
+        send_bark_notification(success_n, already_n, fail_n, global_n, skipped_n, results)
 
 
 def cmd_credit(args):
