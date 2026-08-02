@@ -16,7 +16,27 @@
 
 ## 快速开始
 
-### 1. 准备凭证
+### 1. 获取凭证（二选一）
+
+#### 方式 A: 交互式登录（推荐）
+
+```bash
+chmod +x login.sh
+./login.sh              # 交互式选择区域
+./login.sh cn           # 直接登录 CN (codebuddy.cn)
+./login.sh global       # 直接登录 Global (workbuddy.ai)
+./login.sh manual       # 手动输入已有 Token
+```
+
+登录流程：
+1. 脚本获取授权 State，生成登录链接
+2. 浏览器打开登录页面，用户完成登录
+3. 脚本轮询 Token 端点，自动获取 accessToken / refreshToken
+4. 获取账号信息（UID、昵称、企业 ID）
+5. 保存凭证到 `auths/workbuddy-<uid>.json`
+6. 查询积分验证凭证有效性
+
+#### 方式 B: 手动导入凭证
 
 从 CPA workbuddy 插件或 CPA-Manager-Plus 面板导出凭证文件，放入 `auths/` 目录：
 
@@ -111,6 +131,17 @@ docker compose exec workbuddy python3 workbuddy_checkin.py credit
 
 ## 命令一览
 
+### login.sh — 交互式登录
+
+| 命令 | 说明 |
+|---|---|
+| `./login.sh` | 交互式选择区域登录 |
+| `./login.sh cn` | 直接登录 CN (codebuddy.cn) |
+| `./login.sh global` | 直接登录 Global (workbuddy.ai) |
+| `./login.sh manual` | 手动输入 Token 保存凭证 |
+
+### workbuddy_checkin.py — 签到 / 积分管理
+
 | 命令 | 说明 |
 |---|---|
 | `signin [auths_dir]` | 批量签到所有 CN 账号 |
@@ -118,6 +149,8 @@ docker compose exec workbuddy python3 workbuddy_checkin.py credit
 | `trial <uid> [auths_dir]` | 领取 Global trial 加油包 |
 | `refresh [auths_dir]` | 强制刷新所有 token |
 | `cron <hour> [auths_dir]` | 定时模式（每天 hour 点签到） |
+
+> `credit` 的首参数智能识别：若传入的是目录路径（已存在或含 `/`），自动视作 `auths_dir` 而非 UID，例如 `credit /path/to/auths` 等价于 `credit "" /path/to/auths`。
 
 ## API 端点映射
 

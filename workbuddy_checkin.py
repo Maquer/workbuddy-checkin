@@ -818,7 +818,13 @@ def cmd_signin(args):
 def cmd_credit(args):
     """积分查询。"""
     auth_dir = args.auth_dir or "auths"
-    uid_filter = args.uid if args.uid and not args.uid.startswith("-") else None
+    uid_filter = args.uid
+    # 智能识别：若 uid 实为目录路径（已存在或含分隔符），则视作 auth_dir
+    if uid_filter and (os.path.isdir(uid_filter) or "/" in uid_filter or "\\" in uid_filter):
+        auth_dir = uid_filter
+        uid_filter = None
+    elif uid_filter and uid_filter.startswith("-"):
+        uid_filter = None
     as_json = args.json
     print_credit_report(uid_filter, auth_dir, as_json=as_json)
 
