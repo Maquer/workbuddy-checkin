@@ -47,7 +47,7 @@ import base64
 import argparse
 import urllib.request
 import urllib.error
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 
 # ─── 上游常量（来自 cpa-plugin/workbuddy/main.go + billing.go）───────────────
 
@@ -77,6 +77,10 @@ TOKEN_REFRESH_MARGIN = 5 * 24 * 3600  # 过期前 5 天就刷新（防止服务�
 
 # HTTP 超时
 HTTP_TIMEOUT = 30
+
+# 首次定时签到遇到服务端临时失败时，在约 90 分钟内分级重试。
+# 每次重试前重新读取服务端签到状态，避免超时后重复发放请求。
+CHECKIN_RETRY_DELAYS = (60, 240, 600, 900, 1800, 1800)
 
 # Bark 推送通知（通过环境变量 BARK_URL 配置）
 BARK_URL = os.environ.get("BARK_URL", "")
@@ -346,6 +350,62 @@ def perform_checkin(auth_data):
     return data, None
 
 
+def _already_checked_message(message):
+    """只接受明确的已签到回复，不能仅因包含“今日”就判定成功。"""
+    m = (message or "").lower()
+    return ("already checked" in m or "already signed" in m
+            or "已签到" in m or "已经签到" in m or "已签过" in m)
+
+
+def perform_checkin_with_retries(auth_data):
+    """对可恢复的签到错误限次退避重试；每次先查状态以确保幂等。
+
+    返回 (checkin_result, error, latest_status)。认证失败不重试，由调用者处理。
+    """
+    last_result, last_error, latest_status = None, None, None
+    for attempt in range(len(CHECKIN_RETRY_DELAYS) + 1):
+        if attempt:
+            delay = CHECKIN_RETRY_DELAYS[attempt - 1]
+            print(f"  [重试] {delay} 秒后核对签到状态（第 {attempt + 1} 次）", flush=True)
+            time.sleep(delay)
+            status, status_error = fetch_checkin_status(auth_data)
+            if status_error:
+                last_result, last_error = None, status_error
+                if "401" in status_error:
+                    return None, status_error, latest_status
+                continue
+            latest_status = status
+            if status.get("today_checked_in"):
+                return {"success": True, "already": True,
+                        "message": "今日已签到（重试前确认）"}, None, status
+            if not status.get("active"):
+                return {"success": False, "inactive": True,
+                        "message": "签到活动未开启"}, None, status
+
+        last_result, last_error = perform_checkin(auth_data)
+        if last_error and "401" in last_error:
+            return last_result, last_error, latest_status
+        if last_error is None and isinstance(last_result, dict):
+            if last_result.get("success"):
+                return last_result, None, latest_status
+            if _already_checked_message(last_result.get("message")):
+                return {"success": True, "already": True,
+                        "message": "今日已签到（上游确认）"}, None, latest_status
+
+        reason = last_error or (last_result or {}).get("message", "未知错误")
+        if attempt < len(CHECKIN_RETRY_DELAYS):
+            print(f"  [重试] 本次签到未成功: {reason}", flush=True)
+
+    # 最终仍需确认服务端状态，避免请求已提交但响应超时造成误报。
+    status, status_error = fetch_checkin_status(auth_data)
+    if not status_error:
+        latest_status = status
+        if status.get("today_checked_in"):
+            return {"success": True, "already": True,
+                    "message": "今日已签到（最终核对确认）"}, None, status
+    return last_result, last_error, latest_status
+
+
 def checkin_one_account(path, auth_data, _retry_on_401=True):
     """对单个账号执行签到流程。返回结果字典。"""
     acct = auth_data.get("account", {})
@@ -416,8 +476,20 @@ def checkin_one_account(path, auth_data, _retry_on_401=True):
         result["message"] = "签到活动未开启"
         return result
 
-    # 执行签到
-    checkin_result, checkin_err = perform_checkin(auth_data)
+    # 执行签到：临时故障自动重试，重试前核对状态避免重复签到
+    checkin_result, checkin_err, latest_status = perform_checkin_with_retries(auth_data)
+    if latest_status is not None:
+        result["checkin_status"] = latest_status
+
+    if checkin_result and checkin_result.get("already"):
+        result.update(success=True, skipped=True, reason="already",
+                      message=checkin_result.get("message", "今日已签到"))
+        return result
+    if checkin_result and checkin_result.get("inactive"):
+        result.update(success=False, skipped=True, reason="inactive",
+                      message="签到活动未开启")
+        return result
+
     if checkin_err:
         # 401 时尝试刷新 Token 并重试一次
         if _retry_on_401 and "401" in checkin_err and not is_session_dead(checkin_err):
@@ -433,18 +505,22 @@ def checkin_one_account(path, auth_data, _retry_on_401=True):
         result["success"] = False
         return result
 
-    # 业务软失败（"已签到"类消息）
-    if not checkin_result.get("success", True):
-        msg = checkin_result.get("message", "")
-        msg_low = msg.lower()
-        if "already" in msg_low or "已签" in msg or "今日" in msg:
-            result["success"] = True
-            result["skipped"] = True
-            result["reason"] = "already"
-            result["message"] = "今日已签到（上游确认）"
-            return result
+    # 业务软失败：不能把所有包含“今日”的错误误判为已经签到。
+    if not checkin_result.get("success", False):
+        msg = checkin_result.get("message", "签到失败")
+        if _already_checked_message(msg):
+            result.update(success=True, skipped=True, reason="already",
+                          message="今日已签到（上游确认）")
+        else:
+            result.update(success=False, error=msg, message=msg)
+        return result
 
     result.update(checkin_result)
+
+    # 成功后重新取状态，日志显示实际连签天数而不是签到前的旧值。
+    verified_status, verified_error = fetch_checkin_status(auth_data)
+    if not verified_error and verified_status:
+        result["checkin_status"] = verified_status
 
     # 签到后刷新积分信息
     credits, _ = fetch_user_resource(auth_data)
@@ -1014,7 +1090,7 @@ def cmd_cron(args):
         # 计算下次执行时间
         next_run = now.replace(hour=hour, minute=0, second=0, microsecond=0)
         if next_run <= now:
-            next_run = next_run.replace(day=now.day + 1)
+            next_run += timedelta(days=1)
 
         wait_seconds = (next_run - now).total_seconds()
         print(f"  下次执行: {next_run.strftime('%Y-%m-%d %H:%M')} (等待 {int(wait_seconds)} 秒)")
@@ -1028,7 +1104,14 @@ def cmd_cron(args):
         args.auth_dir = auth_dir
         args.uid = None
         args.json = False
-        cmd_signin(args)
+        try:
+            cmd_signin(args)
+        except SystemExit as exc:
+            # 单次签到命令仍以非零退出码报告失败；长期 cron 容器不能因此退出，
+            # 否则 restart 策略会重启并直接跳到次日，错过恢复机会。
+            if exc.code:
+                print(f"  [调度] 今日签到仍有失败（退出码 {exc.code}），"
+                      "保持容器运行，次日继续执行", flush=True)
 
 
 def main():
