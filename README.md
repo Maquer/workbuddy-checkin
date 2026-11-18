@@ -105,6 +105,10 @@ python3 workbuddy_checkin.py refresh
 python3 workbuddy_checkin.py cron 9
 ```
 
+**签到容错：** 遇到临时网络或服务端业务错误（如 `code=10001`）时，最多进行 6 次间隔递增的重试（累计约 90 分钟）；每次重试前先查询今日签到状态，避免重复请求。若已签到则直接结束；若遇到明确的鉴权失败，仍按照原有 Token 刷新逻辑处理。常驻 `cron` 模式即使当天失败也会保留进程，第二天继续执行。独立 `signin` 命令失败时仍返回非零退出码，方便 CI 判断。
+
+测试：`python3 -m unittest discover -s tests -v`（无需真实账号或网络）。
+
 ### 3. Docker 部署
 
 ```bash
